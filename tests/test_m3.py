@@ -30,3 +30,41 @@ def test_rerank_relevant_first():
 def test_benchmark_stats():
     stats = benchmark_reranker(CrossEncoderReranker(), Q, DOCS, n_runs=2)
     assert "avg_ms" in stats and "min_ms" in stats and "max_ms" in stats
+
+
+def test_rerank_empty_skips_loading(monkeypatch):
+    reranker = CrossEncoderReranker()
+    def unexpected_load():
+        raise AssertionError("Model should not load without candidates")
+    monkeypatch.setattr(reranker, "_load_model", unexpected_load)
+    assert reranker.rerank(Q, []) == []
+    assert reranker.rerank(Q, DOCS, top_k=0) == []
+
+
+def test_rerank_preserves_scores_metadata_and_ranks():
+    class Model:
+        def predict(self, pairs):
+            assert pairs == [(Q, doc["text"]) for doc in DOCS]
+            return [0.3, 0.9, 0.6]
+
+    reranker = CrossEncoderReranker()
+    reranker._model = Model()
+    results = reranker.rerank(Q, DOCS, top_k=2)
+    assert [result.text for result in results] == [DOCS[1]["text"], DOCS[2]["text"]]
+    assert [result.rank for result in results] == [0, 1]
+    assert [result.original_score for result in results] == [0.7, 0.6]
+    assert results[0].metadata == DOCS[1]["metadata"]
+    assert results[0].metadata is not DOCS[1]["metadata"]
+
+
+def test_rerank_single_scalar_score():
+    class Model:
+        def predict(self, pairs):
+            return 0.75
+
+    reranker = CrossEncoderReranker()
+    reranker._model = Model()
+    results = reranker.rerank(Q, [DOCS[0]])
+    assert len(results) == 1
+    assert results[0].rerank_score == 0.75
+    assert results[0].rank == 0

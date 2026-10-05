@@ -29,10 +29,15 @@ def build_pipeline():
     print("\n[1/4] Chunking documents...", flush=True)
     docs = load_documents()
     all_chunks = []
+    parent_contexts = {}
     for doc in docs:
         parents, children = chunk_hierarchical(doc["text"], metadata=doc["metadata"])
+        source = doc["metadata"]["source"]
+        for parent in parents:
+            parent_contexts[f"{source}:{parent.parent_id}"] = parent.text
         for child in children:
-            all_chunks.append({"text": child.text, "metadata": {**child.metadata, "parent_id": child.parent_id}})
+            pid = f"{source}:{child.parent_id}"
+            all_chunks.append({"text": child.text, "metadata": {**child.metadata, "parent_id": pid}})
     print(f"  ✓ {len(all_chunks)} chunks from {len(docs)} documents ({time.time()-t0:.1f}s)", flush=True)
 
     # Step 2: Enrichment (M5)
@@ -41,6 +46,12 @@ def build_pipeline():
     enriched = enrich_chunks(all_chunks)
     if enriched:
         all_chunks = [{"text": e.enriched_text, "metadata": e.auto_metadata} for e in enriched]
+        from collections import Counter
+        import json
+        enrichment_counts = dict(Counter(e.auto_metadata.get("enrichment_status", "unknown") for e in enriched))
+        with open("reports/enrichment_summary.json", "w", encoding="utf-8") as summary_file:
+            json.dump(enrichment_counts, summary_file, ensure_ascii=False, indent=2)
+        print(f"  Enrichment status: {enrichment_counts}", flush=True)
         print(f"  ✓ Enriched {len(enriched)} chunks ({time.time()-t0:.1f}s)", flush=True)
     else:
         print("  ⚠️  M5 not implemented — using raw chunks", flush=True)
@@ -50,6 +61,7 @@ def build_pipeline():
     print(f"\n[3/4] Indexing {len(all_chunks)} chunks (BM25 + Dense)...", flush=True)
     search = HybridSearch()
     search.index(all_chunks)
+    search.parent_contexts = parent_contexts
     print(f"  ✓ Indexed ({time.time()-t0:.1f}s)", flush=True)
 
     # Step 4: Reranker (M3)
@@ -66,15 +78,20 @@ def run_query(query: str, search: HybridSearch, reranker: CrossEncoderReranker) 
     results = search.search(query)
     docs = [{"text": r.text, "score": r.score, "metadata": r.metadata} for r in results]
     reranked = reranker.rerank(query, docs, top_k=RERANK_TOP_K)
-    contexts = [r.text for r in reranked] if reranked else [r.text for r in results[:3]]
+    selected = reranked if reranked else results[:3]
+    parent_contexts = getattr(search, "parent_contexts", {})
+    contexts = list(dict.fromkeys(
+        parent_contexts.get(getattr(r, "metadata", {}).get("parent_id"), r.text)
+        for r in selected
+    ))
 
-    from config import OPENAI_API_KEY
-    if OPENAI_API_KEY and contexts:
+    from config import GEMINI_MODEL
+    from src.llm import has_gemini_key, create_gemini_client
+    if has_gemini_key() and contexts:
         try:
-            from openai import OpenAI
-            client = OpenAI()
+            client = create_gemini_client()
             context_str = "\n\n".join(contexts)
-            resp = client.chat.completions.create(model="gpt-4o-mini", messages=[
+            resp = client.chat.completions.create(model=GEMINI_MODEL, messages=[
                 {"role": "system", "content": "Trả lời CHỈ dựa trên context. Nếu không có → nói 'Không tìm thấy.'"},
                 {"role": "user", "content": f"Context:\n{context_str}\n\nCâu hỏi: {query}"},
             ])
@@ -99,12 +116,22 @@ def evaluate_pipeline(search: HybridSearch, reranker: CrossEncoderReranker):
         answers.append(answer)
         all_contexts.append(contexts)
         ground_truths.append(item["ground_truth"])
+        import json
+        with open("reports/production_answers.json", "w", encoding="utf-8") as checkpoint:
+            json.dump([{"question": q, "answer": a, "contexts": c, "ground_truth": g}
+                       for q, a, c, g in zip(questions, answers, all_contexts, ground_truths)],
+                      checkpoint, ensure_ascii=False, indent=2)
         print(f"  [{i+1}/{len(test_set)}] {item['question'][:50]}...", flush=True)
 
     t0 = time.time()
     print(f"\n[Eval] Running RAGAS (4 metrics × {len(test_set)} questions)...", flush=True)
     results = evaluate_ragas(questions, answers, all_contexts, ground_truths)
     print(f"  ✓ RAGAS done ({time.time()-t0:.1f}s)", flush=True)
+
+    if results.get("status") != "ok":
+        save_report(results, [])
+        print("Evaluation incomplete; numeric placeholders are not measured scores.")
+        return results
 
     print("\n" + "=" * 60)
     print("PRODUCTION RAG SCORES")

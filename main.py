@@ -56,6 +56,9 @@ def main():
         with open(prod_path, encoding="utf-8") as f:
             prod = json.load(f)
 
+        if any(report.get("aggregate", {}).get("status") != "ok" for report in (naive, prod)):
+            print("Evaluation incomplete: inspect report status; no valid metric comparison.")
+            return
         print(f"\n{'Metric':<25} {'Basic':>8} {'Production':>12} {'Δ':>8}")
         print("-" * 55)
         for m in ["faithfulness", "answer_relevancy", "context_precision", "context_recall"]:

@@ -37,3 +37,60 @@ def test_rrf_method():
     merged = reciprocal_rank_fusion([a, b], top_k=1)
     if merged:
         assert merged[0].method == "hybrid"
+
+
+def test_segment_normalizes_compound_words():
+    assert "_" not in segment_vietnamese("Nhân viên nghỉ phép năm")
+
+
+def test_bm25_empty_and_unrelated_queries():
+    bm25 = BM25Search()
+    bm25.index([])
+    assert bm25.search("nghỉ phép") == []
+    bm25.index(CHUNKS)
+    assert bm25.search("zzzzzz") == []
+    assert bm25.search("nghỉ phép", top_k=0) == []
+
+
+def test_rrf_exact_scores_and_ranking():
+    import pytest
+
+    a = [SearchResult("doc1", 999, {}, "bm25"),
+         SearchResult("doc2", 1, {"source": "policy"}, "bm25")]
+    b = [SearchResult("doc2", 0.01, {}, "dense")]
+    merged = reciprocal_rank_fusion([a, b], k=60, top_k=2)
+    assert [result.text for result in merged] == ["doc2", "doc1"]
+    assert merged[0].score == pytest.approx(1 / 62 + 1 / 61)
+    assert merged[0].metadata == {"source": "policy"}
+    assert a[1].method == "bm25"
+
+
+def test_dense_qdrant_round_trip(monkeypatch):
+    import numpy as np
+    from qdrant_client import QdrantClient
+    from src.m2_search import DenseSearch, EMBEDDING_DIM
+
+    class Encoder:
+        def encode(self, texts, **kwargs):
+            def vector(text):
+                result = np.zeros(EMBEDDING_DIM)
+                result[0 if "nghỉ" in text else 1] = 1
+                return result
+            return (vector(texts) if isinstance(texts, str)
+                    else np.array([vector(text) for text in texts]))
+
+    client = QdrantClient(":memory:")
+    monkeypatch.setattr("qdrant_client.QdrantClient", lambda **kwargs: client)
+    dense = DenseSearch()
+    dense._encoder = Encoder()
+    try:
+        dense.index(CHUNKS, collection="module2_test")
+        results = dense.search("nghỉ phép", top_k=1, collection="module2_test")
+        assert len(results) == 1
+        assert results[0].text == CHUNKS[0]["text"]
+        assert results[0].metadata == {"source": "policy"}
+        assert results[0].method == "dense"
+        dense.index([], collection="module2_test")
+        assert dense.search("nghỉ phép", collection="module2_test") == []
+    finally:
+        client.close()

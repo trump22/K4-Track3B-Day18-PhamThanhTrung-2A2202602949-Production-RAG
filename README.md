@@ -21,7 +21,7 @@ Xem **ASSIGNMENT.md** để biết chi tiết từng module và timeline.
 |-----------|-----------|----------|
 | Docker (Qdrant) | ✅ Có | M2 Dense Search |
 | Python 3.11+ | ✅ Có | Tất cả modules (RAGAS cần 3.11+ cho asyncio) |
-| `OPENAI_API_KEY` | ⚠️ M4+M5 | RAGAS eval (M4), Enrichment LLM (M5) |
+| `GEMINI_API_KEY` | ⚠️ M4+M5 | RAGAS eval (M4), Enrichment LLM (M5) |
 
 **Pre-download models** (tránh timeout trong lab):
 ```bash
@@ -57,7 +57,7 @@ python -m venv .venv
 ```bash
 docker compose up -d                    # Khởi động Qdrant vector database
 pip install -r requirements.txt
-cp .env.example .env                    # Tạo file .env và điền OPENAI_API_KEY
+cp .env.example .env                    # Tạo file .env và điền GEMINI_API_KEY
 python naive_baseline.py                # Khởi tạo baseline
 ```
 
@@ -65,7 +65,7 @@ python naive_baseline.py                # Khởi tạo baseline
 ```powershell
 docker compose up -d                    # Khởi động Qdrant vector database
 pip install -r requirements.txt
-Copy-Item .env.example .env             # Tạo file .env và điền OPENAI_API_KEY
+Copy-Item .env.example .env             # Tạo file .env và điền GEMINI_API_KEY
 python naive_baseline.py                # Khởi tạo baseline
 ```
 *(Nếu dùng Windows CMD: dùng `copy .env.example .env` thay cho `Copy-Item`)*
@@ -148,3 +148,20 @@ K4-Track3B-Production-RAG/
   *(Ví dụ: `K4-Track3B-DAY18-NguyenVanAn-AI20K001-ProductionRAG`)*
 - **Hạn chót nộp bài:** **11h59 ngày hôm sau diễn ra bài lab (GMT+7)** trên cổng VLearn LMS / Codelab.
 - **Chi tiết yêu cầu:** Xem tại [ASSIGNMENT.md](ASSIGNMENT.md) và [RUBRIC.md](RUBRIC.md).
+
+## Gemini API
+
+Điền `GEMINI_API_KEY` vào `.env` ở thư mục gốc. `GEMINI_MODEL` mặc định là
+`gemini-3.1-flash-lite` và có thể thay đổi bằng model được cấp quyền trong tài khoản.
+Client dùng endpoint tương thích OpenAI của Google; thư viện `openai` vẫn cần
+nhưng request được gửi đến Gemini. M1–M3 dùng model local, không cần key.
+
+M4 đã triển khai RAGAS dùng Gemini cho LLM và `bge-m3` local cho embeddings.
+Kết quả có `status`: `ok`, `empty` hoặc `error`; điểm 0 khi `error` không phải
+điểm đo thực tế. M5 dùng một lần gọi Gemini/chunk với fallback local; context
+và câu hỏi HyQA được thêm vào văn bản index, metadata nguồn được giữ nguyên.
+
+Chạy tích hợp với Python 3.11: `.venv311\Scripts\python.exe main.py`.
+Môi trường `.venv` Python 3.14 chưa tương thích đầy đủ với RAGAS 0.1/nest_asyncio.
+Enrichment thành công được cache theo model/nội dung/nguồn; metadata lưu trạng thái
+LLM, cache hoặc fallback. Request Gemini được điều tiết bằng `GEMINI_REQUEST_INTERVAL`.
